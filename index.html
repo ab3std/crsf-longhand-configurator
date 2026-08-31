@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CRSF Longhand Configurator</title>
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --panel: #262626;
+    --border: #3a3a3a;
+    --text: #e6e6e6;
+    --muted: #9a9a9a;
+    --accent: #4da3ff;
+    --ok: #58c66b;
+    --err: #e05a5a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+  }
+  h1 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0 0 16px;
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+  button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:disabled {
+    background: var(--border);
+    color: var(--muted);
+    cursor: not-allowed;
+  }
+  input[type="text"], input[type="number"] {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 7px 10px;
+    font-size: 14px;
+  }
+  label {
+    font-size: 13px;
+    color: var(--muted);
+  }
+  #status {
+    font-size: 13px;
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+  #status.disconnected { color: var(--muted); }
+  #status.connected { color: var(--ok); }
+  #status.error { color: var(--err); }
+  #log {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    height: 400px;
+    overflow-y: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .log-rx { color: var(--accent); }
+  .log-tx { color: var(--ok); }
+  .log-info { color: var(--muted); }
+  .unsupported {
+    background: #4a2a2a;
+    border: 1px solid var(--err);
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 16px;
+  }
+</style>
+</head>
+<body>
+  <h1>CRSF Longhand Configurator</h1>
+
+  <div id="unsupported" class="unsupported" hidden>
+    Web Serial API is not available in this browser. Use a recent Chrome, Edge, or Opera build.
+  </div>
+
+  <div class="row">
+    <button id="connectBtn">Connect</button>
+    <label for="baud">Baud</label>
+    <input type="number" id="baud" value="400000" style="width:100px">
+    <span id="status" class="disconnected">disconnected</span>
+  </div>
+
+  <div class="row">
+    <input type="text" id="sendHex" placeholder="hex bytes, e.g. c8 18 16" style="flex:1; min-width:240px">
+    <button id="sendBtn" disabled>Send</button>
+    <button id="clearBtn">Clear log</button>
+  </div>
+
+  <div id="log"></div>
+
+<script>
+(() => {
+  const connectBtn = document.getElementById('connectBtn');
+  const sendBtn = document.getElementById('sendBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  const sendHex = document.getElementById('sendHex');
+  const baudInput = document.getElementById('baud');
+  const statusEl = document.getElementById('status');
+  const logEl = document.getElementById('log');
+  const unsupportedEl = document.getElementById('unsupported');
+
+  let port = null;
+  let reader = null;
+  let readLoopPromise = null;
+
+  function log(text, cls) {
+    const line = document.createElement('div');
+    if (cls) line.className = cls;
+    const ts = new Date().toISOString().substr(11, 12);
+    line.textContent = `[${ts}] ${text}`;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function toHex(bytes) {
+    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+  }
+
+  function setStatus(text, cls) {
+    statusEl.textContent = text;
+    statusEl.className = cls;
+  }
+
+  function setConnectedUI(connected) {
+    connectBtn.textContent = connected ? 'Disconnect' : 'Connect';
+    sendBtn.disabled = !connected;
+  }
+
+  async function readLoop() {
+    try {
+      while (port && port.readable) {
+        reader = port.readable.getReader();
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            if (value && value.length) log(toHex(value), 'log-rx');
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      }
+    } catch (err) {
+      if (port) log(`read error: ${err.message}`, 'log-info');
+    }
+  }
+
+  async function connect() {
+    try {
+      const selectedPort = await navigator.serial.requestPort();
+      const baudRate = parseInt(baudInput.value, 10) || 400000;
+      await selectedPort.open({ baudRate });
+      port = selectedPort;
+      setStatus(`connected @ ${baudRate}`, 'connected');
+      setConnectedUI(true);
+      log(`connected @ ${baudRate} baud`, 'log-info');
+      readLoopPromise = readLoop();
+
+      navigator.serial.addEventListener('disconnect', (e) => {
+        if (e.target === port) disconnect();
+      });
+    } catch (err) {
+      setStatus(err.message, 'error');
+      log(`connect failed: ${err.message}`, 'log-info');
+    }
+  }
+
+  async function disconnect() {
+    try {
+      if (reader) {
+        await reader.cancel().catch(() => {});
+      }
+      if (readLoopPromise) await readLoopPromise.catch(() => {});
+      if (port) await port.close().catch(() => {});
+    } finally {
+      port = null;
+      reader = null;
+      setStatus('disconnected', 'disconnected');
+      setConnectedUI(false);
+      log('disconnected', 'log-info');
+    }
+  }
+
+  async function send() {
+    if (!port || !port.writable) return;
+    const raw = sendHex.value.trim();
+    if (!raw) return;
+    const parts = raw.split(/[\s,]+/).filter(Boolean);
+    const bytes = new Uint8Array(parts.map(p => parseInt(p, 16)));
+    if (bytes.some(Number.isNaN)) {
+      log(`invalid hex input: ${raw}`, 'log-info');
+      return;
+    }
+    const writer = port.writable.getWriter();
+    try {
+      await writer.write(bytes);
+      log(toHex(bytes), 'log-tx');
+    } finally {
+      writer.releaseLock();
+    }
+  }
+
+  connectBtn.addEventListener('click', () => {
+    if (port) disconnect(); else connect();
+  });
+  sendBtn.addEventListener('click', send);
+  sendHex.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') send();
+  });
+  clearBtn.addEventListener('click', () => { logEl.innerHTML = ''; });
+
+  if (!('serial' in navigator)) {
+    unsupportedEl.hidden = false;
+    connectBtn.disabled = true;
+  }
+})();
+</script>
+</body>
+</html>
