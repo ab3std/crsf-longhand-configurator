@@ -17,12 +17,15 @@
     --warn: #e0ab5a;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background: var(--bg);
     color: var(--text);
     padding: 24px;
+    display: flex;
+    flex-direction: column;
   }
   h1 {
     font-size: 18px;
@@ -93,7 +96,9 @@
   .layout {
     display: flex;
     gap: 20px;
-    align-items: flex-start;
+    align-items: stretch;
+    flex: 1;
+    min-height: 0;
   }
   .panel {
     background: var(--panel);
@@ -102,6 +107,8 @@
     padding: 16px;
     flex: 1 1 0;
     min-width: 360px;
+    min-height: 0;
+    overflow-y: auto;
   }
   .terminal-panel {
     display: flex;
@@ -109,8 +116,8 @@
     gap: 10px;
   }
   @media (max-width: 900px) {
-    .layout { flex-direction: column; }
-    .panel { width: 100%; }
+    .layout { flex-direction: column; height: auto; }
+    .panel { width: 100%; max-height: 60vh; }
   }
 
   fieldset {
@@ -166,20 +173,26 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 12px;
-    height: 70vh;
-    min-height: 300px;
     overflow-y: auto;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 12px;
     white-space: pre-wrap;
     word-break: break-all;
     flex: 1;
+    min-height: 0;
   }
   .log-rx { color: var(--accent); }
   .log-tx { color: var(--ok); }
   .log-info { color: var(--muted); }
   .log-ok { color: var(--ok); }
   .log-err { color: var(--err); }
+  .log-sep {
+    color: var(--err);
+    text-align: center;
+    font-weight: 600;
+    margin: 8px 0;
+  }
+  .log-sep::before, .log-sep::after { content: "\2500\2500\2500\2500"; }
   .unsupported {
     background: #4a2a2a;
     border: 1px solid var(--err);
@@ -198,8 +211,6 @@
 
   <div class="row">
     <button id="connectBtn">Connect</button>
-    <label for="baud">Baud</label>
-    <input type="number" id="baud" value="115200" style="width:100px">
     <span id="status" class="disconnected">disconnected</span>
     <button id="refreshBtn" class="secondary" disabled>Refresh status</button>
   </div>
@@ -259,7 +270,6 @@
   const connectBtn = document.getElementById('connectBtn');
   const refreshBtn = document.getElementById('refreshBtn');
   const clearBtn = document.getElementById('clearBtn');
-  const baudInput = document.getElementById('baud');
   const statusEl = document.getElementById('status');
   const logEl = document.getElementById('log');
   const unsupportedEl = document.getElementById('unsupported');
@@ -284,14 +294,24 @@
   const queue = [];
   let inFlight = null;
 
+  // USB CDC-ACM ignores the requested baud rate; this is just what open() requires.
+  const BAUD_RATE = 115200;
+
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-  function currentBaud() { return parseInt(baudInput.value, 10) || 115200; }
 
   function log(text, cls) {
     const line = document.createElement('div');
     if (cls) line.className = cls;
     const ts = new Date().toISOString().substr(11, 12);
     line.textContent = `[${ts}] ${text}`;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function logSeparator(text) {
+    const line = document.createElement('div');
+    line.className = 'log-sep';
+    line.textContent = ` ${text} `;
     logEl.appendChild(line);
     logEl.scrollTop = logEl.scrollHeight;
   }
@@ -310,7 +330,6 @@
 
   function setConnectedUI(isConnected) {
     connectBtn.textContent = isConnected ? 'Disconnect' : 'Connect';
-    baudInput.disabled = isConnected;
     refreshBtn.disabled = !isConnected;
     saveBtn.disabled = !isConnected;
     rebootBtn.disabled = !isConnected;
@@ -396,6 +415,19 @@
       && persistedValues[name] !== pendingValues[name];
     badge.classList.toggle('visible', changed);
     badge.title = changed ? `differs from saved value (${persistedValues[name]})` : '';
+  }
+
+  // Blanks the form so it's obvious the displayed values are not live device
+  // state (used whenever we're not connected, including mid-reboot).
+  function clearFormValues() {
+    for (const fd of FIELDS) {
+      const el = inputEls[fd.name];
+      if (fd.kind === 'bool') el.checked = false;
+      else if (fd.kind !== 'led_type') el.value = '';
+      delete persistedValues[fd.name];
+      delete pendingValues[fd.name];
+      badgeEls[fd.name].classList.remove('visible');
+    }
   }
 
   // ---- form construction ----
@@ -549,25 +581,38 @@
     handlePortLost();
   }
 
+  // Once a device reboots, the SerialPort object we had open goes stale —
+  // the RP2040's USB stack fully re-enumerates, so the OS (and the browser)
+  // treat it as an unplug/replug rather than the same live connection.
+  // Reusing the old object's .open() just fails forever. Instead, once the
+  // device is gone we poll navigator.serial.getPorts() — which returns
+  // fresh, already-authorized SerialPort objects for currently-present
+  // devices, no user gesture needed — and match the new instance back to
+  // the old one by USB vendor/product id.
+  function sameDevice(a, b) {
+    return !!a && !!b && a.usbVendorId === b.usbVendorId && a.usbProductId === b.usbProductId;
+  }
+
   // Handles both a genuine unplug and a device-initiated reboot (which also
   // drops the USB CDC connection while the RP2040 re-enumerates). If we just
   // sent save/reboot/reset-defaults successfully, try to reconnect to the
-  // same port automatically once it reappears; otherwise just go idle.
+  // same device automatically once it reappears; otherwise just go idle.
   async function handlePortLost(reason) {
     if (!connected) return;
     connected = false;
     setConnectedUI(false);
+    clearFormValues();
     const rebooting = expectingReboot;
     expectingReboot = false;
     if (inFlight) { inFlight.reject(new Error('port lost')); inFlight = null; }
     while (queue.length) queue.shift().reject(new Error('port lost'));
-    const targetPort = port;
+    const targetInfo = port ? port.getInfo() : null;
     await teardownStreams();
 
-    if (rebooting && targetPort) {
+    if (rebooting && targetInfo) {
       setStatus('rebooting…', 'disconnected');
-      log(reason || 'device rebooting, reconnecting…', 'log-info');
-      reconnectAfterReboot(targetPort);
+      logSeparator('device rebooting, reconnecting…');
+      reconnectAfterReboot(targetInfo);
     } else {
       port = null;
       setStatus('disconnected', 'disconnected');
@@ -575,7 +620,7 @@
     }
   }
 
-  async function reconnectAfterReboot(targetPort, attemptsLeft = 15) {
+  async function reconnectAfterReboot(targetInfo, attemptsLeft = 20) {
     if (attemptsLeft <= 0) {
       port = null;
       setStatus('disconnected (reconnect failed — click Connect)', 'error');
@@ -584,17 +629,21 @@
     }
     await sleep(500);
     try {
-      await targetPort.open({ baudRate: currentBaud() });
-      port = targetPort;
+      const candidates = await navigator.serial.getPorts();
+      const candidate = candidates.find(p => sameDevice(p.getInfo(), targetInfo))
+        || (candidates.length === 1 ? candidates[0] : null);
+      if (!candidate) throw new Error('device not back yet');
+      await candidate.open({ baudRate: BAUD_RATE });
+      port = candidate;
       connected = true;
-      setStatus(`connected @ ${currentBaud()}`, 'connected');
+      setStatus('connected', 'connected');
       setConnectedUI(true);
       log('reconnected', 'log-info');
       setupStreams();
       readLoopPromise = readLoop();
       await refreshStatus();
     } catch (err) {
-      reconnectAfterReboot(targetPort, attemptsLeft - 1);
+      reconnectAfterReboot(targetInfo, attemptsLeft - 1);
     }
   }
 
@@ -608,18 +657,19 @@
     port = null;
     setStatus('disconnected', 'disconnected');
     setConnectedUI(false);
+    clearFormValues();
     log('disconnected', 'log-info');
   }
 
   async function connect() {
     try {
       const selectedPort = await navigator.serial.requestPort();
-      await selectedPort.open({ baudRate: currentBaud() });
+      await selectedPort.open({ baudRate: BAUD_RATE });
       port = selectedPort;
       connected = true;
-      setStatus(`connected @ ${currentBaud()}`, 'connected');
+      setStatus('connected', 'connected');
       setConnectedUI(true);
-      log(`connected @ ${currentBaud()} baud`, 'log-info');
+      log('connected', 'log-info');
       setupStreams();
       readLoopPromise = readLoop();
       await refreshStatus();
