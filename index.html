@@ -14,6 +14,7 @@
     --accent: #4da3ff;
     --ok: #58c66b;
     --err: #e05a5a;
+    --warn: #e0ab5a;
   }
   * { box-sizing: border-box; }
   body {
@@ -27,6 +28,14 @@
     font-size: 18px;
     font-weight: 600;
     margin: 0 0 16px;
+  }
+  h2 {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
   .row {
     display: flex;
@@ -44,18 +53,29 @@
     font-size: 14px;
     cursor: pointer;
   }
+  button.secondary {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+  button.danger {
+    background: var(--err);
+  }
   button:disabled {
     background: var(--border);
     color: var(--muted);
     cursor: not-allowed;
   }
-  input[type="text"], input[type="number"] {
+  input[type="text"], input[type="number"], select {
     background: var(--panel);
     border: 1px solid var(--border);
     color: var(--text);
     border-radius: 6px;
     padding: 7px 10px;
     font-size: 14px;
+  }
+  input:disabled, select:disabled {
+    opacity: 0.5;
   }
   label {
     font-size: 13px;
@@ -69,21 +89,97 @@
   #status.disconnected { color: var(--muted); }
   #status.connected { color: var(--ok); }
   #status.error { color: var(--err); }
-  #log {
+
+  .layout {
+    display: flex;
+    gap: 20px;
+    align-items: flex-start;
+  }
+  .panel {
     background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    flex: 1 1 0;
+    min-width: 360px;
+  }
+  .terminal-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  @media (max-width: 900px) {
+    .layout { flex-direction: column; }
+    .panel { width: 100%; }
+  }
+
+  fieldset {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin: 0 0 16px;
+    padding: 12px 14px 14px;
+  }
+  fieldset:last-of-type { margin-bottom: 0; }
+  legend {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0 6px;
+  }
+  .field-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 0;
+  }
+  .field-row label {
+    flex: 0 0 190px;
+    color: var(--text);
+  }
+  .field-row .field-control {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .field-row input[type="number"] { width: 120px; }
+  .field-row select { width: 120px; }
+  .field-row input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+  }
+  .badge-changed {
+    color: var(--warn);
+    font-size: 16px;
+    line-height: 1;
+    visibility: hidden;
+  }
+  .badge-changed.visible { visibility: visible; }
+  .badge-changed::after { content: "\25CF"; }
+
+  .actions { margin-top: 4px; }
+
+  #log {
+    background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 12px;
-    height: 400px;
+    height: 70vh;
+    min-height: 300px;
     overflow-y: auto;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 12px;
     white-space: pre-wrap;
     word-break: break-all;
+    flex: 1;
   }
   .log-rx { color: var(--accent); }
   .log-tx { color: var(--ok); }
   .log-info { color: var(--muted); }
+  .log-ok { color: var(--ok); }
+  .log-err { color: var(--err); }
   .unsupported {
     background: #4a2a2a;
     border: 1px solid var(--err);
@@ -103,32 +199,93 @@
   <div class="row">
     <button id="connectBtn">Connect</button>
     <label for="baud">Baud</label>
-    <input type="number" id="baud" value="400000" style="width:100px">
+    <input type="number" id="baud" value="115200" style="width:100px">
     <span id="status" class="disconnected">disconnected</span>
+    <button id="refreshBtn" class="secondary" disabled>Refresh status</button>
   </div>
 
-  <div class="row">
-    <input type="text" id="sendHex" placeholder="hex bytes, e.g. c8 18 16" style="flex:1; min-width:240px">
-    <button id="sendBtn" disabled>Send</button>
-    <button id="clearBtn">Clear log</button>
-  </div>
+  <div class="layout">
+    <section class="panel form-panel">
+      <fieldset>
+        <legend>TX-side link (half-duplex UART to flight controller)</legend>
+        <div id="group-txside"></div>
+      </fieldset>
+      <fieldset>
+        <legend>RX-side link (full-duplex UART to ELRS RX chip)</legend>
+        <div id="group-rxside"></div>
+      </fieldset>
+      <fieldset>
+        <legend>Status LED</legend>
+        <div id="group-led"></div>
+      </fieldset>
+      <div class="row actions">
+        <button id="saveBtn" disabled>Save &amp; reboot</button>
+        <button id="rebootBtn" class="secondary" disabled>Reboot (discard changes)</button>
+        <button id="resetBtn" class="danger" disabled>Reset to factory defaults</button>
+      </div>
+    </section>
 
-  <div id="log"></div>
+    <section class="panel terminal-panel">
+      <div class="row" style="margin-bottom:0;">
+        <h2>Device log</h2>
+        <button id="clearBtn" class="secondary" style="margin-left:auto;">Clear</button>
+      </div>
+      <div id="log"></div>
+    </section>
+  </div>
 
 <script>
 (() => {
+  // ---- field metadata (mirrors config.h SystemConfig / config.cpp FIELDS) ----
+  const FIELDS = [
+    { name: 'txside_pin',      kind: 'pin',      label: 'TX-side pin',      group: 'txside' },
+    { name: 'txside_baud',     kind: 'baud',     label: 'TX-side baud',     group: 'txside' },
+    { name: 'txside_inverted', kind: 'bool',     label: 'TX-side inverted', group: 'txside' },
+    { name: 'rxside_rx_pin',   kind: 'pin',      label: 'RX-side RX pin',   group: 'rxside' },
+    { name: 'rxside_tx_pin',   kind: 'pin',      label: 'RX-side TX pin',   group: 'rxside' },
+    { name: 'rxside_baud',     kind: 'baud',     label: 'RX-side baud',     group: 'rxside' },
+    { name: 'rxside_inverted', kind: 'bool',     label: 'RX-side inverted', group: 'rxside' },
+    { name: 'led_enabled',     kind: 'bool',     label: 'LED enabled',      group: 'led' },
+    { name: 'led_type',        kind: 'led_type', label: 'LED type',         group: 'led' },
+    { name: 'led_pin',         kind: 'pin',      label: 'LED pin',          group: 'led' },
+  ];
+  const fieldByName = Object.fromEntries(FIELDS.map(fd => [fd.name, fd]));
+  const inputEls = {};
+  const badgeEls = {};
+  const persistedValues = {};
+  const pendingValues = {};
+
+  // ---- DOM refs ----
   const connectBtn = document.getElementById('connectBtn');
-  const sendBtn = document.getElementById('sendBtn');
+  const refreshBtn = document.getElementById('refreshBtn');
   const clearBtn = document.getElementById('clearBtn');
-  const sendHex = document.getElementById('sendHex');
   const baudInput = document.getElementById('baud');
   const statusEl = document.getElementById('status');
   const logEl = document.getElementById('log');
   const unsupportedEl = document.getElementById('unsupported');
+  const saveBtn = document.getElementById('saveBtn');
+  const rebootBtn = document.getElementById('rebootBtn');
+  const resetBtn = document.getElementById('resetBtn');
 
+  // ---- serial port state ----
   let port = null;
   let reader = null;
+  let writer = null;
+  let readableStreamClosed = null;
+  let writableStreamClosed = null;
   let readLoopPromise = null;
+  let connected = false;
+  let expectingReboot = false;
+
+  // ---- command queue: the device console handles one line at a time and
+  // replies before the next command may be sent, so commands are dispatched
+  // strictly in order and the next one only goes out once the previous
+  // response is fully read. ----
+  const queue = [];
+  let inFlight = null;
+
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+  function currentBaud() { return parseInt(baudInput.value, 10) || 115200; }
 
   function log(text, cls) {
     const line = document.createElement('div');
@@ -139,8 +296,11 @@
     logEl.scrollTop = logEl.scrollHeight;
   }
 
-  function toHex(bytes) {
-    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+  function classifyLine(line) {
+    const t = line.trim();
+    if (t.startsWith('ERR')) return 'log-rx log-err';
+    if (t === 'OK' || t.startsWith('OK ')) return 'log-rx log-ok';
+    return 'log-rx';
   }
 
   function setStatus(text, cls) {
@@ -148,98 +308,342 @@
     statusEl.className = cls;
   }
 
-  function setConnectedUI(connected) {
-    connectBtn.textContent = connected ? 'Disconnect' : 'Connect';
-    sendBtn.disabled = !connected;
+  function setConnectedUI(isConnected) {
+    connectBtn.textContent = isConnected ? 'Disconnect' : 'Connect';
+    baudInput.disabled = isConnected;
+    refreshBtn.disabled = !isConnected;
+    saveBtn.disabled = !isConnected;
+    rebootBtn.disabled = !isConnected;
+    resetBtn.disabled = !isConnected;
+    for (const fd of FIELDS) inputEls[fd.name].disabled = !isConnected;
+  }
+
+  // ---- command dispatch ----
+
+  function pumpQueue() {
+    if (inFlight || queue.length === 0 || !connected || !writer) return;
+    inFlight = queue.shift();
+    log(inFlight.text, 'log-tx');
+    writer.write(inFlight.text + '\n').catch(err => {
+      const failed = inFlight;
+      inFlight = null;
+      failed.reject(err);
+      handlePortLost(`write error: ${err.message}`);
+    });
+  }
+
+  // mode 'single': the response is exactly one line.
+  // mode 'status': the response is many lines, terminated by a line that is just "OK".
+  function enqueueCommand(text, mode) {
+    return new Promise((resolve, reject) => {
+      queue.push({ text, mode, lines: [], resolve, reject });
+      pumpQueue();
+    });
+  }
+
+  function handleIncomingLine(line) {
+    log(line, classifyLine(line));
+    if (!inFlight) return; // unsolicited output
+    inFlight.lines.push(line);
+    const done = inFlight.mode === 'status' ? line.trim() === 'OK' : true;
+    if (done) {
+      const finished = inFlight;
+      inFlight = null;
+      finished.resolve(finished.lines);
+      pumpQueue();
+    }
+  }
+
+  // ---- status parsing / form population ----
+
+  const FIELD_LINE_RE = /^(\S+)\s+persisted=(\S+)\s+pending=(\S+)/;
+
+  function applyStatusLines(lines) {
+    for (const line of lines) {
+      const m = FIELD_LINE_RE.exec(line.trim());
+      if (!m) continue;
+      const [, name, persisted, pending] = m;
+      if (!(name in fieldByName)) continue;
+      persistedValues[name] = persisted;
+      pendingValues[name] = pending;
+      setInputValue(fieldByName[name], pending);
+      updateChangedBadge(name);
+    }
+  }
+
+  async function refreshStatus() {
+    try {
+      const lines = await enqueueCommand('status', 'status');
+      applyStatusLines(lines);
+    } catch (err) {
+      // port was lost mid-request; handlePortLost already reported it
+    }
+  }
+
+  function setInputValue(fd, valueStr) {
+    const el = inputEls[fd.name];
+    if (fd.kind === 'bool') {
+      el.checked = valueStr === 'true';
+    } else {
+      el.value = valueStr;
+    }
+  }
+
+  function updateChangedBadge(name) {
+    const badge = badgeEls[name];
+    const changed = persistedValues[name] !== undefined
+      && pendingValues[name] !== undefined
+      && persistedValues[name] !== pendingValues[name];
+    badge.classList.toggle('visible', changed);
+    badge.title = changed ? `differs from saved value (${persistedValues[name]})` : '';
+  }
+
+  // ---- form construction ----
+
+  function buildForm() {
+    const groups = { txside: document.getElementById('group-txside'),
+                      rxside: document.getElementById('group-rxside'),
+                      led: document.getElementById('group-led') };
+    for (const fd of FIELDS) {
+      const row = document.createElement('div');
+      row.className = 'field-row';
+
+      const label = document.createElement('label');
+      label.textContent = fd.label;
+      label.htmlFor = `field-${fd.name}`;
+      row.appendChild(label);
+
+      const control = document.createElement('div');
+      control.className = 'field-control';
+
+      let el;
+      if (fd.kind === 'bool') {
+        el = document.createElement('input');
+        el.type = 'checkbox';
+      } else if (fd.kind === 'led_type') {
+        el = document.createElement('select');
+        for (const opt of ['plain', 'rgb']) {
+          const o = document.createElement('option');
+          o.value = opt;
+          o.textContent = opt;
+          el.appendChild(o);
+        }
+      } else {
+        el = document.createElement('input');
+        el.type = 'number';
+        el.step = '1';
+        if (fd.kind === 'pin') { el.min = '0'; el.max = '29'; }
+        if (fd.kind === 'baud') { el.min = '300'; el.max = '2000000'; }
+      }
+      el.id = `field-${fd.name}`;
+      el.disabled = true;
+      inputEls[fd.name] = el;
+      control.appendChild(el);
+
+      const badge = document.createElement('span');
+      badge.className = 'badge-changed';
+      badgeEls[fd.name] = badge;
+      control.appendChild(badge);
+
+      row.appendChild(control);
+      groups[fd.group].appendChild(row);
+
+      wireField(fd);
+    }
+  }
+
+  function wireField(fd) {
+    const el = inputEls[fd.name];
+    el.addEventListener('change', async () => {
+      if (!connected) return;
+      const value = fd.kind === 'bool' ? (el.checked ? 'true' : 'false') : el.value.trim();
+      if (value === '') { setInputValue(fd, pendingValues[fd.name]); return; }
+      el.disabled = true;
+      try {
+        const lines = await enqueueCommand(`set ${fd.name} ${value}`, 'single');
+        const resp = (lines[0] || '').trim();
+        if (resp === 'OK') {
+          pendingValues[fd.name] = value;
+        } else {
+          setInputValue(fd, pendingValues[fd.name]);
+        }
+      } catch (err) {
+        setInputValue(fd, pendingValues[fd.name]);
+      } finally {
+        if (connected) el.disabled = false;
+        updateChangedBadge(fd.name);
+      }
+    });
+  }
+
+  // ---- lifecycle commands: pending edits were already committed on the
+  // device by the `set` commands sent as the user edited fields, so these
+  // just send the bare command. ----
+
+  async function runLifecycle(cmd) {
+    if (!connected) return;
+    try {
+      const lines = await enqueueCommand(cmd, 'single');
+      const resp = (lines[0] || '').trim();
+      if (resp.startsWith('OK')) {
+        expectingReboot = true;
+      }
+    } catch (err) {
+      // port already lost; handlePortLost already reported it
+    }
+  }
+
+  saveBtn.addEventListener('click', () => runLifecycle('save'));
+  rebootBtn.addEventListener('click', () => {
+    if (!confirm('Reboot now? Any unsaved changes will be discarded.')) return;
+    runLifecycle('reboot');
+  });
+  resetBtn.addEventListener('click', () => {
+    if (!confirm('Erase the saved configuration and reboot to factory defaults?')) return;
+    runLifecycle('reset-defaults');
+  });
+  refreshBtn.addEventListener('click', refreshStatus);
+  clearBtn.addEventListener('click', () => { logEl.innerHTML = ''; });
+
+  // ---- serial plumbing ----
+
+  function setupStreams() {
+    const textDecoder = new TextDecoderStream();
+    readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+    reader = textDecoder.readable.getReader();
+
+    const textEncoder = new TextEncoderStream();
+    writableStreamClosed = textEncoder.readable.pipeTo(port.writable);
+    writer = textEncoder.writable.getWriter();
+  }
+
+  async function teardownStreams() {
+    if (reader) { await reader.cancel().catch(() => {}); reader = null; }
+    if (writer) { await writer.close().catch(() => {}); writer = null; }
+    if (readableStreamClosed) { await readableStreamClosed.catch(() => {}); readableStreamClosed = null; }
+    if (writableStreamClosed) { await writableStreamClosed.catch(() => {}); writableStreamClosed = null; }
   }
 
   async function readLoop() {
+    let buf = '';
     try {
-      while (port && port.readable) {
-        reader = port.readable.getReader();
-        try {
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            if (value && value.length) log(toHex(value), 'log-rx');
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) {
+          buf += value;
+          let idx;
+          // a line ends on either CR or LF, and a lone empty line (the other
+          // half of a CRLF/LFCR pair) is silently dropped, same as the device.
+          while ((idx = buf.search(/[\r\n]/)) >= 0) {
+            const line = buf.slice(0, idx);
+            buf = buf.slice(idx + 1);
+            if (line.length > 0) handleIncomingLine(line);
           }
-        } finally {
-          reader.releaseLock();
         }
       }
     } catch (err) {
-      if (port) log(`read error: ${err.message}`, 'log-info');
+      handlePortLost(`read error: ${err.message}`);
+      return;
     }
+    handlePortLost();
+  }
+
+  // Handles both a genuine unplug and a device-initiated reboot (which also
+  // drops the USB CDC connection while the RP2040 re-enumerates). If we just
+  // sent save/reboot/reset-defaults successfully, try to reconnect to the
+  // same port automatically once it reappears; otherwise just go idle.
+  async function handlePortLost(reason) {
+    if (!connected) return;
+    connected = false;
+    setConnectedUI(false);
+    const rebooting = expectingReboot;
+    expectingReboot = false;
+    if (inFlight) { inFlight.reject(new Error('port lost')); inFlight = null; }
+    while (queue.length) queue.shift().reject(new Error('port lost'));
+    const targetPort = port;
+    await teardownStreams();
+
+    if (rebooting && targetPort) {
+      setStatus('rebooting…', 'disconnected');
+      log(reason || 'device rebooting, reconnecting…', 'log-info');
+      reconnectAfterReboot(targetPort);
+    } else {
+      port = null;
+      setStatus('disconnected', 'disconnected');
+      log(reason || 'disconnected', 'log-info');
+    }
+  }
+
+  async function reconnectAfterReboot(targetPort, attemptsLeft = 15) {
+    if (attemptsLeft <= 0) {
+      port = null;
+      setStatus('disconnected (reconnect failed — click Connect)', 'error');
+      log('automatic reconnect failed, please reconnect manually', 'log-info');
+      return;
+    }
+    await sleep(500);
+    try {
+      await targetPort.open({ baudRate: currentBaud() });
+      port = targetPort;
+      connected = true;
+      setStatus(`connected @ ${currentBaud()}`, 'connected');
+      setConnectedUI(true);
+      log('reconnected', 'log-info');
+      setupStreams();
+      readLoopPromise = readLoop();
+      await refreshStatus();
+    } catch (err) {
+      reconnectAfterReboot(targetPort, attemptsLeft - 1);
+    }
+  }
+
+  async function manualDisconnect() {
+    connected = false;
+    expectingReboot = false;
+    if (inFlight) { inFlight.reject(new Error('disconnected')); inFlight = null; }
+    while (queue.length) queue.shift().reject(new Error('disconnected'));
+    await teardownStreams();
+    if (port) await port.close().catch(() => {});
+    port = null;
+    setStatus('disconnected', 'disconnected');
+    setConnectedUI(false);
+    log('disconnected', 'log-info');
   }
 
   async function connect() {
     try {
       const selectedPort = await navigator.serial.requestPort();
-      const baudRate = parseInt(baudInput.value, 10) || 400000;
-      await selectedPort.open({ baudRate });
+      await selectedPort.open({ baudRate: currentBaud() });
       port = selectedPort;
-      setStatus(`connected @ ${baudRate}`, 'connected');
+      connected = true;
+      setStatus(`connected @ ${currentBaud()}`, 'connected');
       setConnectedUI(true);
-      log(`connected @ ${baudRate} baud`, 'log-info');
+      log(`connected @ ${currentBaud()} baud`, 'log-info');
+      setupStreams();
       readLoopPromise = readLoop();
-
-      navigator.serial.addEventListener('disconnect', (e) => {
-        if (e.target === port) disconnect();
-      });
+      await refreshStatus();
     } catch (err) {
       setStatus(err.message, 'error');
       log(`connect failed: ${err.message}`, 'log-info');
     }
   }
 
-  async function disconnect() {
-    try {
-      if (reader) {
-        await reader.cancel().catch(() => {});
-      }
-      if (readLoopPromise) await readLoopPromise.catch(() => {});
-      if (port) await port.close().catch(() => {});
-    } finally {
-      port = null;
-      reader = null;
-      setStatus('disconnected', 'disconnected');
-      setConnectedUI(false);
-      log('disconnected', 'log-info');
-    }
-  }
-
-  async function send() {
-    if (!port || !port.writable) return;
-    const raw = sendHex.value.trim();
-    if (!raw) return;
-    const parts = raw.split(/[\s,]+/).filter(Boolean);
-    const bytes = new Uint8Array(parts.map(p => parseInt(p, 16)));
-    if (bytes.some(Number.isNaN)) {
-      log(`invalid hex input: ${raw}`, 'log-info');
-      return;
-    }
-    const writer = port.writable.getWriter();
-    try {
-      await writer.write(bytes);
-      log(toHex(bytes), 'log-tx');
-    } finally {
-      writer.releaseLock();
-    }
-  }
-
   connectBtn.addEventListener('click', () => {
-    if (port) disconnect(); else connect();
+    if (connected) manualDisconnect(); else connect();
   });
-  sendBtn.addEventListener('click', send);
-  sendHex.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') send();
-  });
-  clearBtn.addEventListener('click', () => { logEl.innerHTML = ''; });
 
-  if (!('serial' in navigator)) {
+  if ('serial' in navigator) {
+    navigator.serial.addEventListener('disconnect', (e) => {
+      if (e.target === port) handlePortLost('device disconnected');
+    });
+  } else {
     unsupportedEl.hidden = false;
     connectBtn.disabled = true;
   }
+
+  buildForm();
+  setConnectedUI(false);
 })();
 </script>
 </body>
